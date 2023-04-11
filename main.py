@@ -649,11 +649,11 @@ def checkForUpdates ():
     newVersion = ''
     for line in lines:
         if '__version__' in line:
-            print(__version__,line)
-            if __version__ in line:
+            latest = line.split(' ')[-1]
+            if __version__ == latest:
                 # do nothing if versions don't differ
                 return
-            newVersion = line.split(' ')[-1]
+            newVersion = latest
             break
     
     # seconds counter for confirmation

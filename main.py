@@ -27,7 +27,7 @@ import network
 import socket
 import _thread
 from utime import sleep
-from machine import Pin, I2C
+from machine import Pin, I2C, reset
 from ssd1306 import SSD1306_I2C
 from math import sqrt, log
 from framebuf import FrameBuffer, MONO_HLSB
@@ -623,29 +623,65 @@ def multiTicker (startSymbols, update=30):
         
 
 # -- version updater --
-# updates will be queried from github pages ()
-# the mini CICD pipeline will be triggered once every sync period
+# updates will be queried from github pages.
+# the mini CICD pipeline will be triggered once every sync period in the multiticker.
 # or at start to query the current version on main branch
 
 __version__ = 'v6.1'
 github_pages_target = 'https://raw.githubusercontent.com/B0-B/bitboi/main/main.py'
-def CICD ():
+
+def checkForUpdates ():
 
     '''
     Tiny CICD pipeline implementation
     '''
 
-    printDisplay('Found new version, do you want to install it? (yes)')
-    printDisplay('Updating ...')
-
-    code = requests.get()
-
+    # request latest code 
+    while True:
+        try:
+            code = requests.get(github_pages_target).text
+            break
+        except Exception as e:
+            print('failed to request latest version, try again ...')
+    
+    # parse out version
+    lines = code.split('\n')
+    newVersion = ''
+    for line in lines:
+        if '__version__' in line:
+            print(__version__,line)
+            if __version__ in line:
+                # do nothing if versions don't differ
+                return
+            newVersion = line.split(' ')[-1]
+            break
+    
+    # seconds counter for confirmation
+    count = 5
+    updateConfirmed = False
+    for s in range(count):
+        printDisplay(f'Should I update to new version {newVersion}? Press button for "yes" ({count-s}s)')
+        # wait for 1 second and listen for input
+        for i in range(1000):            
+            if bootsel_is_pressed():
+                updateConfirmed = True
+                break
+            sleep(.001)
+    
+    # confirmed
+    if updateConfirmed:
+        printDisplay(f'Updating to version {newVersion} ...')
+        sleep(1)
+        with open('./bitboi.py') as file:
+            file.write(code)
+        printDisplay(f'Thanks for updating me! :)')
+        sleep(3)
+        reset()
+            
 
 
 # -- webserver --
 # for future development
-
-
 def main ():
 
     '''
@@ -653,9 +689,12 @@ def main ():
     '''
     
     showLogo(3)
+    checkForUpdates()
     connectToWifi()
     multiTicker(krakenReference, UPDATE)
 
 
 if __name__ == '__main__':
+    #CICD()
     main()
+

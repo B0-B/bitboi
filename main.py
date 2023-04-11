@@ -647,11 +647,10 @@ def checkForUpdates ():
     
     # parse out version
     lines = code.split('\r\n')
-    print(lines)
     newVersion = ''
     for line in lines:
         if '__version__' in line:
-            latest = line.split(' ')[-1]
+            latest = line.split(' ')[-1].replace("'","")
             if __version__ == latest:
                 # do nothing if versions don't differ
                 return
@@ -698,4 +697,3 @@ def main ():
 
 if __name__ == '__main__':
     main()
-

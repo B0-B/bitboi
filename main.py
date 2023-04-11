@@ -672,7 +672,7 @@ def checkForUpdates ():
     if updateConfirmed:
         printDisplay(f'Updating to version {newVersion} ...')
         sleep(1)
-        with open('./bitboi.py') as file:
+        with open('./bitboi.py', 'w+') as file:
             file.write(code)
         printDisplay(f'Thanks for updating me! :)')
         sleep(3)
@@ -689,12 +689,10 @@ def main ():
     '''
     
     showLogo(3)
-    checkForUpdates()
     connectToWifi()
+    checkForUpdates()
     multiTicker(krakenReference, UPDATE)
 
 
 if __name__ == '__main__':
-    #CICD()
     main()
-

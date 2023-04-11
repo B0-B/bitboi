@@ -639,13 +639,15 @@ def checkForUpdates ():
     # request latest code 
     while True:
         try:
-            code = requests.get(github_pages_target).text
+            response = requests.get(github_pages_target)
+            code = str(response.text)
             break
         except Exception as e:
             print('failed to request latest version, try again ...')
     
     # parse out version
-    lines = code.split('\n')
+    lines = code.split('\r\n')
+    print(lines)
     newVersion = ''
     for line in lines:
         if '__version__' in line:
@@ -671,15 +673,12 @@ def checkForUpdates ():
     # confirmed
     if updateConfirmed:
         printDisplay(f'Updating to version {newVersion} ...')
+        sleep(1)
         with open('./main.py', 'w+') as file:
             file.write(code)
-        sleep(1)
         printDisplay(f'Thanks for updating me! :)')
         sleep(3)
-        while True:
-            printDisplay(f'Please restart me!')
-            sleep(10)
-        
+        reset()
             
 
 
@@ -699,3 +698,4 @@ def main ():
 
 if __name__ == '__main__':
     main()
+

@@ -627,7 +627,7 @@ def multiTicker (startSymbols, update=30):
 # the mini CICD pipeline will be triggered once every sync period in the multiticker.
 # or at start to query the current version on main branch
 
-__version__ = 'v6.1'
+__version__ = 'v6'
 github_pages_target = 'https://raw.githubusercontent.com/B0-B/bitboi/main/main.py'
 
 def checkForUpdates ():
@@ -672,7 +672,7 @@ def checkForUpdates ():
     if updateConfirmed:
         printDisplay(f'Updating to version {newVersion} ...')
         sleep(1)
-        with open('./bitboi.py', 'w+') as file:
+        with open('./main.py', 'w+') as file:
             file.write(code)
         printDisplay(f'Thanks for updating me! :)')
         sleep(3)

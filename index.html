@@ -1,0 +1,46 @@
+<!-- Captive Portal Landing Page -->
+<!DOCTYPE html>
+<head>
+</head>
+<body style="background: #222; color: #fff">
+    <h1 style="text-align: center; font-family: Arial; width: 100%;">bitboi</h1>
+    <input type="text" id="ssid" placeholder="SSID" style="width: 40%; margin-left: 30%;">
+    <input type="password" id="wpa2" placeholder="WPA2 Password" style="width: 40%; margin-left: 30%;">
+    <button type="submit" style="width: 40%; margin-left: 30%;" onclick="submit()">connect</button>
+    <h3 id="info-field" style="text-align:center;font-family:Arial;"></h3>
+    <script>
+        function request (options, path) {
+            return new Promise(function (resolve, reject) {
+                var xhr = new XMLHttpRequest(); 
+                xhr.open("POST", path, true); 
+                xhr.setRequestHeader("Content-type", "application/json;charset=UTF-8"); 
+                xhr.onreadystatechange = function () {  
+                    if (xhr.readyState == 4 && xhr.status == 200) {
+                        resolve(JSON.parse(xhr.responseText));
+                    }
+                }
+                xhr.onerror = function(e) {
+                    reject({'errors': ['error during request: no connection']})
+                }
+                xhr.send(JSON.stringify(options)); 
+            });
+        }
+        async function submit() {
+            const ssid = document.getElementById("ssid").value;
+            const wpa2 = document.getElementById("wpa2").value;
+            const data = { ssid: ssid, wpa2: wpa2 };
+            const response = await request(data, '/login');
+            const msg = response.message;
+            const info = document.getElementById('info-field');
+            if (msg == 'ok') {
+                info.style.color = 'springgreen';
+                info.innerHTML = 'Credentials changed successfully.'
+                window.open('','_parent', '').close()
+            } else if (msg == 'fail') {
+                info.style.color = 'red';
+                info.innerHTML = 'Credentials change failed.'
+            }
+        }
+    </script>
+</body>
+

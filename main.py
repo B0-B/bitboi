@@ -1,42 +1,36 @@
-# bitboi v6.1 software © 2023
-# Source Code Licensed under MIT.
-# Copyright © 2023 github.com/B0-B
+#####################################################################################
+#####################################################################################
+# Main Code © 2024
+# Copyright © 2024 github.com/B0-B
 
-# Permission is hereby granted, free of charge, to any person obtaining a copy of
-# this software and associated documentation files (the “Software”), to deal in the
-# Software without restriction, including without limitation the rights to use, copy,
-# modify, merge, publish, distribute, sublicense, and/or sell copies of the Software,
-# and to permit persons to whom the Software is furnished to do so, subject to the
-# following conditions:
-# 
-# The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
-# INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-# PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
-# HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
-# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+# This program allows to orchestrate all needed modules:
+# - main program
+# - captive portal
+#####################################################################################
+#####################################################################################
 
-# modules are all built-in
-# ssd1306 can be installed via thonny, or downloaded here:
-# https://github.com/stlehmann/micropython-ssd1306/blob/master/ssd1306.py
-#import socket
-import gc
-import network
-import socket
-import _thread
+__version__ = 'v7.0'
+github_pages_target = 'https://raw.githubusercontent.com/B0-B/bitboi/main/main.py'
+github_feed_target = 'https://raw.githubusercontent.com/B0-B/bitboi/main/news'
+
+#####################################################################################
+
+import gc, json, sys, _thread
+import urequests as requests
+from math import sqrt, log
+from portal import spawn
 from utime import sleep
+from network import WLAN, STA_IF
 from machine import Pin, I2C, reset
 from ssd1306 import SSD1306_I2C
-from math import sqrt, log
 from framebuf import FrameBuffer, MONO_HLSB
-import urequests as requests
-import json
 
+# ============= Parameters ==============
+# Pages which alternate on display
+PAGE = 0
+DISPLAY_PAGES = ['chart', 'statistics']
 
-################## parameters #################
-# =============================================
+# ---- I2C pin-out ----
 # Do not change these parameters, otherwise
 # this could short the display!
 WIDTH = 128
@@ -45,46 +39,51 @@ scl_pin = 19
 sda_pin = 18
 vcc_pin = 20
 gnd_pin = 21
-# =============================================
+# display geometry (this can be changed)
+leftPadding = 5
 
-# market 
-INTERVAL = 60               # interval unit in minutes (e.g. a day = 1440 minutes)
-EPOCH = 128					# a value for each pixel - number of values seperated by interval (too large values can overload memory)
-TREND_INTERVALS = 12        # how many intervals for trend window
-REFERENCE = 'USD'			# reference currency
-UPDATE =  30                # OHLC request delay in seconds
-SYNC = 12					# syncing period in hours
-krakenReference = {			# reference symbols for kraken api
+# ---- kraken API ----
+krakenReference = {			
     'bitcoin': 'XBT',
-    'ethereum': 'ETH',
-    'ethereum-pow': 'ETHW',
-    'filecoin': 'FIL',
-    'monero': 'XMR'
+    'ethereum': 'ETH'
 }
-DISPLAY_MODES = [
-    'chart',
-    'indicate'
-    
-]
-################################################
 
-# -- emulate necessary pins for display --
+class news:
+    feed = ''
+
+# ---- load config ----
+with open('config.json') as f:
+    _config = json.load(f)
+# convert to variables
+EPOCH = 128					                    # a value for each pixel - number of values seperated by interval (too large values can overload memory)
+INTERVAL = _config['interval']                  # interval unit in minutes (e.g. a day = 1440 minutes)
+TREND_INTERVALS = _config['trend_intervals']    # how many intervals for trend window
+REFERENCE = _config['reference']			    # reference currency
+COIN = _config['coin']                      	# selected kraken ticker symbol
+UPDATE =  15                                    # OHLC request delay in seconds
+
+# ============= Load Modules ==============
+# ---- load I²C connection ----
+# emulate necessary pins for display
 # emulate VCC on pin 20
 VCC = Pin(vcc_pin, Pin.OUT)
 VCC.value(1)
-
 # emulate GND on pin 21
 GND = Pin(gnd_pin, Pin.OUT)
 GND.value(0)
+# init I²C
+i2c = I2C(1, scl=Pin(scl_pin), sda=Pin(sda_pin), freq=200000)
+oled = SSD1306_I2C(WIDTH, HEIGHT, i2c)
+# ---- init wifi ----
+wifi = WLAN(STA_IF)
+wifi_connected = False
 
-# init global wifi object
-wifi = network.WLAN(network.STA_IF)
-
-
-# -- bootsel module --
+# ============= Methods ==============
+# ---- bootsel button exploit ----
 def bootsel_is_pressed ():
     
     '''
+    Inverse alias of read_bootsel().
     Returns boolean corresponding to bootsel high/low state.
     '''
     
@@ -135,111 +134,28 @@ def read_bootsel():
     cpsie(0x0)
 
 
-# -- load I2C connection --
-i2c = I2C(1, scl=Pin(scl_pin), sda=Pin(sda_pin), freq=200000)
-oled = SSD1306_I2C(WIDTH, HEIGHT, i2c)
-
-def buttonIsPressed ():
-    
-    return bootsel_is_pressed()
-
-def connectToWifi ():
+# ---- I²C methods ----
+def clear ():
     
     '''
-    Will connect to the first possible profile (with SSID and WPA2) in wifi.json.
-    Profiles at the top are tried first (1st prio). Will jump into a loop until a connection is est.
-    If the data in wifi.json is still stock, a setup is displayed.
+    Clears display.
     '''
     
-    # try to load wifi.json
-    try:
-        with open('wifi.json') as f:
-            JSON = json.load(f)
-    except:
-        printDisplay('could not load wifi.json file ...', clean=True)
-        raise FileNotFoundError('wifi.json')
+    oled.fill(0)
     
-    # extract profile names
-    profileNames = list(JSON.keys())
-    
-    # check if at least a profile was provided
-    if len(profileNames) == 0:
-        printDisplay('no wifi profiles provided in wifi.json', clean=True)
-    
-    # check if a profile was configured at all
-    if len(profileNames) == 2 and JSON[profileNames[0]]['wpa2'] == 'twerky1' and JSON[profileNames[1]]['wpa2'] == 'twerky2':
-        printDisplay('Hi, there!', clean=True)
-        sleep(3)
-        printDisplay('I am bitboi, a tiny crypto ticker.', clean=True)
-        sleep(4)
-        printDisplay('To set me up, follow these steps:', clean=True)
-        sleep(4)
-        # display the setup steps in a loop
-        steps = [
-            '1. Connect me to your computer and download thonny from thonny.org',
-            '2. In thonny select "MicroPython (Rasperry Pi Pico)" in the lower right corner.',
-            '3. Open wifi.json in the directory on the left in thonny.',
-            '4. Add wifi profiles with your SSID and WPA2 password',
-            '5. Save the file, and plug me to any USB or power bank',
-            "6. Let's have some fun!",
-            "If you press the button once you can cycle through all symbols.",
-            "Double click and keep pressed cycles back."
-        ]
-        while True:
-            for step in steps:
-                printDisplay(step, clean=True)
-                sleep(5)
-        exit()
-    
-    # iterate through profiles, starting from top until a connection succeeds
-    connected = False
-    while not connected:
-    
-        for name, cred in JSON.items():
-            
-            try:
-                
-                printDisplay(f'Connect to {name} ...', clean=True)
-                sleep(1)
-                
-                # initiliaze wifi adapter
-                #wifi = network.WLAN(network.STA_IF)
-                wifi.active(True)
-                
-                # disable powersave mode to make the wifi more responsive
-                wifi.config(pm = 0xa11140)
-                
-                # try to connect
-                wifi.connect(cred['ssid'], cred['wpa2'])
-                
-                # exit
-                connected = True
-                printDisplay(f'Connected WiFi:', clean=True)
-                printDisplay(name, startLine=1, clean=False)
-                
-                sleep(2)
-                break
-            
-            except:
-                
-                printDisplay(f'{name} failed.', clean=True)
-                sleep(2)
-
-
-# -- I2C methods --
-def showLogo (time=2):
+def trademark (time=2):
     
     '''
-    Displays logo for a specific amount of time.
+    Displays trademark logo for a provided amount of time.
     '''
     
     logoData = bytearray(b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x07\x80\x00\x00\x00\x00\x00\x00\x3c\x00\x00\x00\x00\x00\x00\x00\x07\x80\x00\x00\x00\x00\x00\x00\x3c\x00\x00\x00\x00\x00\x00\x00\x07\x80\x00\x00\x00\x00\x00\x00\x3c\x00\x00\x00\x00\x00\x00\x00\x07\x80\x00\x00\x00\x00\x00\x00\x3c\x00\x00\x00\x00\x00\x00\x00\x07\x80\x00\x00\x00\x00\x00\x00\x3c\x00\x00\x00\x00\x00\x00\x00\x07\x80\x00\x00\x00\x00\x00\x00\x3c\x00\x00\x00\x00\x00\x00\x00\x07\x80\x00\x00\x00\x00\x00\x00\x3c\x00\x00\x00\x00\x00\x00\x00\x07\x80\x00\x00\x00\x00\x00\x00\x3c\x00\x00\x00\x00\x00\x00\x00\x07\xff\xff\x80\xe1\xff\xff\xfc\x3f\xff\xfc\x00\xff\xff\x81\xe0\x07\xff\xff\xc0\xe1\xff\xff\xfc\x3f\xff\xff\x03\xff\xff\xc1\xe0\x07\xff\xff\xe0\xe1\xff\xff\xfc\x3f\xff\xff\x03\xff\xff\xe1\xe0\x07\xff\xff\xf0\xe1\xff\xff\xfc\x3f\xff\xff\x87\xff\xff\xe1\xe0\x07\x80\x01\xf0\xe1\xe0\x00\x00\x3c\x00\x07\x87\x80\x01\xe1\xe0\x07\x80\x00\xf0\xe1\xe0\x00\x00\x3c\x00\x07\x87\x80\x00\xf1\xe0\x07\x80\x00\xf0\xe1\xe0\x00\x00\x3c\x00\x07\x87\x80\x00\xf1\xe0\x07\x80\x00\xf0\xe1\xe0\x00\x00\x3c\x00\x07\x87\x80\x00\xf1\xe0\x07\x80\x00\xf0\xe1\xe0\x00\x00\x3c\x00\x07\x87\x80\x00\xf1\xe0\x07\x80\x00\xf0\xe1\xe0\x00\x00\x3c\x00\x07\x87\x80\x00\xf1\xe0\x07\x80\x00\xf0\xe1\xe0\x00\x00\x3c\x00\x07\x87\x80\x00\xf1\xe0\x07\x80\x00\xf0\xe1\xe0\x00\x00\x3c\x00\x07\x87\x80\x00\xf1\xe0\x07\x80\x00\xf0\xe1\xe0\x00\x00\x3c\x00\x07\x87\x80\x00\xf1\xe0\x07\x80\x00\xf0\xe1\xe0\x00\x00\x3c\x00\x07\x87\x80\x01\xe1\xe0\x07\xc0\x01\xf0\xe0\xf0\x00\x00\x3e\x00\x0f\x87\x80\x01\xe1\xe0\x03\xff\xff\xe0\xe0\xff\xe0\x00\x1f\xff\xff\x07\xff\xff\xe1\xe0\x03\xff\xff\xe0\xe0\xff\xe0\x00\x1f\xff\xff\x03\xff\xff\xc1\xe0\x01\xff\xff\xc0\xe0\x7f\xe0\x00\x0f\xff\xfe\x01\xff\xff\x81\xe0\x00\x7f\xff\x00\xe0\x1f\xc0\x00\x03\xff\xf8\x00\x7f\xff\x00\xe0\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00')
     fb = FrameBuffer(logoData, WIDTH, HEIGHT, MONO_HLSB)
-    oled.fill(0)
+    clear()
     oled.blit(fb, 0, 0)
     oled.show()
     sleep(time)
-    oled.fill(0)
+    clear()
 
 def text (output, lineHeight=10, lineLength=15, startLine=0):
 
@@ -259,18 +175,18 @@ def text (output, lineHeight=10, lineLength=15, startLine=0):
         
     oled.show()
 
-def printDisplay (output, clean=True, startLine=0):
+def print_display (output, clean=True, startLine=0):
     
     '''
     Prints in terminal and OLED display.
     '''
     
     if clean:
-        oled.fill(0)
+        clear()
     text(output, startLine=startLine)
     print(output)
     
-def plotChart (oled, data, height=30, y=0):
+def plot_chart (oled, data, height=30, y=0):
     
     '''
     plots the data to chart.
@@ -302,8 +218,23 @@ def plotChart (oled, data, height=30, y=0):
             for j in range(1,abs(dy)):
                 oled.pixel(i, y-plotData[i]+s*j, 1)
 
-
-# -- trading API and stats --    
+def center (output, lineHeight=10, pad_x=0, pad_y=0, delay=.2):
+    current_line = ''
+    line = 0
+    for i in range(len(output)):
+        current_line += output[i]
+        if (i % 15 == 0 and i > 0) or (delay==0 and i == len(output)-1):
+            oled.text(current_line, pad_x, int(line*lineHeight) + pad_y)
+            line += 1
+            current_line = ''
+        if delay > 0:
+            clear()
+            oled.text(current_line, pad_x, int(line*lineHeight) + pad_y)
+            oled.show()
+        sleep(delay)
+    oled.show()
+    
+# ---- trading API and stats ----    
 class krakenApi:
 
     '''
@@ -347,7 +278,7 @@ class krakenApi:
         since = serverTime - epoch * INTERVAL * 60
         
         # make history request
-        pkg = requests.get(f'https://api.kraken.com/0/public/OHLC?pair={krakenReference[symbol]}{ref}&interval={interval}&since={since}').json()
+        pkg = requests.get(f'https://api.kraken.com/0/public/OHLC?pair={symbol}{ref}&interval={interval}&since={since}', timeout=10).json()
         if len(pkg['error']) > 0:
             raise ValueError(pkg['error'][0])
         
@@ -355,29 +286,14 @@ class krakenApi:
         # unpack
         closed = []
         for name in pkg['result'].keys():
-            if krakenReference[symbol] in name.upper():
+            if symbol.upper() in name.upper():
                 ohlcData = pkg['result'][name]
                 break
         for i in range(len(ohlcData)):
             closed.append(float(ohlcData[i][4]))
         
         return closed
-    
-def updateSymbolReference ():
-    
-    '''
-    Updates the krakenReference with all other symbols found on kraken.
-    '''
-    
-    while True:
-        try:
-            krakenReference = krakenApi.getSymbols(REFERENCE, krakenReference)
-            break
-        except Exception as e:
-            print(e)
-            sleep(.5)
             
-
 def drift (history, window):
     
     '''
@@ -426,224 +342,28 @@ def digits (number, n):
             break
     return float(new)
 
-
-# -- ticker main loop --   
-def multiTicker (startSymbols, update=30):
-    
-    '''
-    Live crypto ticker implementation with symbol switching button.
-    '''
-    
-    updateCount = 0
-    printDisplay('sync tradable symbols ...')
-    
-    # update krakenReference
-    krakenReference = krakenApi.getSymbols('USD', startSymbols)
-    
-    # extract the symbols for reference
-    symbols = list(krakenReference.keys())
-    sym_ind = symbols.index('bitcoin')
-    symbol = symbols[sym_ind]
-    
-    # alter display mode at every cycle
-    alter = 0
-    
-    leftPadding = 5
-    intervals_per_day = int(1440/INTERVAL)
-    intervals_per_hour = int(60/INTERVAL)
-    
-    printDisplay('start ticker ...')
-    
-    
-    # Every while loop cycle is a tick
-    while True:
-        
-        try:
-            
-            # request most recent price history 
-            history = krakenApi.history(symbol, INTERVAL, EPOCH, ref=REFERENCE)
-            
-            
-            # check if the symbol has a significant history first
-            if len(history) < TREND_INTERVALS + 1:
-                
-                printDisplay(f'not enough data for {symbol} yet.')
-            
-            else:
-                
-                # build title line
-                oled.fill(0) # clean old state
-                # draw symbol background
-                oled.fill_rect(0, 0, 127, 10, 1)  
-                center_padding_length = int((16-len(symbol))/2)
-                center_padding = ''.join([' ' for i in range(center_padding_length)])
-                oled.text(center_padding + symbol.upper(), 0, 2, 0)
-                
-                # extract price
-                price = digits(history[-1], 5)
-                
-                # show chart
-                if DISPLAY_MODES[alter] == 'indicate':
-                    
-                    # compute statistics
-                    d = drift(history, TREND_INTERVALS)
-                    d_h = round(100 * d / intervals_per_hour, 2)
-                    v = volatility(history, d, TREND_INTERVALS)
-                    v_h = round(100*v/sqrt(intervals_per_hour),2) # see https://en.wikipedia.org/wiki/Volatility_(finance)#Mathematical_definition
-                    change_24h = round(100 * (history[-1] / history[-intervals_per_day] - 1), 1)
-                    sign = ['+', ''][change_24h < 0]
-                    
-                    # build price line with 24h return 
-                    priceLine = f'${price} {sign}{change_24h}%'
-                    
-                    # build ROI line from 1h drift
-                    roiLine = f'ROI: {['+', ''][d < 0]}{d_h} %/h'
-                    
-                    # build volatility line
-                    volLine = f'VOL: {v_h} %/h'
-                    
-                    # add assembled lines
-                    oled.text(priceLine, leftPadding , 15)
-                    oled.text(roiLine, leftPadding , 30)
-                    oled.text(volLine, leftPadding , 45)
-                
-                # show chart
-                elif DISPLAY_MODES[alter] == 'chart':
-                    
-                    # compute change for price line only
-                    change_24h = round(100 * (history[-1] / history[-intervals_per_day] - 1), 1)
-                    sign = ['+', ''][change_24h < 0]
-                    
-                    # build price line with 24h return 
-                    priceLine = f'${price} {sign}{change_24h}%'
-                    
-                    # add price line
-                    oled.text(priceLine, leftPadding, 15)
-                    
-                    # plot chart below
-                    plotChart (oled, history, height=32, y=3)
-                
-                # iterate
-                alter = (alter + 1) % len(DISPLAY_MODES)
-                    
-                    
-                
-                # send to display
-                oled.show()
-            
-            # simulate listener for button
-            continuousDelayTime = 300 # in ms
-            doubleClickHookTime = 200 # in ms
-            doubleClickResponseTime = 1000 # in ms
-            dt = 0.005
-            for i in range(int(update/dt)):
-                
-                # check if button is pressed in this loop
-                entered_loop = False
-                clickPattern = '' # init click pattern for this tick cylce
-                while buttonIsPressed():
-                    
-                    # check for double clicks first
-                    # wait for double click
-                    for i in range(doubleClickHookTime):
-                        sleep(0.001)
-                        if not buttonIsPressed():
-                            clickPattern += '0'
-                            break
-                    if clickPattern == '0':
-                        for i in range(doubleClickResponseTime):
-                            sleep(0.001)
-                            if buttonIsPressed():
-                                clickPattern += '1'
-                                break
-                    prop = 'to'
-                    if clickPattern == '01':
-                        prop = 'back'
-                        if sym_ind == 0:
-                            sym_ind = len(symbols)-1
-                        else:
-                            sym_ind -= 1
-                    
-                    # otherwise if no double click was detected,
-                    # raise the symbol index in cyclic fashion
-                    else:
-                        sym_ind = (sym_ind+1)%len(symbols)
-                    
-                    try:
-                        symbol = symbols[sym_ind]
-                        oled.fill(0)
-                        text(f'switch {prop}')
-                        text(symbol, startLine=2)
-                        sleep(continuousDelayTime*.001)
-                        entered_loop = True
-                    except Exception as e:
-                        print('button error:', e)
-                                                                                                                                      
-                # kill the for loop right away if a selection was made
-                if entered_loop:
-                    break
-                
-                sleep(dt)
-            
-            # clean up after each tick
-            gc.collect()
-                
-        except Exception as e:
-            
-            print('***ERROR***:', str(e))
-            
-            errorString = str(e).lower()
-            
-            if ('conn' in errorString or 'http' in errorString or 'timeout' in errorString):
-                printDisplay('lost connection, reconnect ...')
-            else:
-                printDisplay('Some anomalies ...')
-            
-        finally:
-            
-            # increment the update count for symbols
-            updateCount += update
-            
-            # if threshold of e.g. a day is reached update
-            if updateCount - SYNC*3600 > 0:
-                
-                # update symbols
-                try:
-                    printDisplay('update symbols ...')
-                    krakenReference = krakenApi.getSymbols('USD', startSymbols)
-                    symbols = list(krakenReference.keys())
-                    updateCount = 0
-                except Exception as e:
-                    print('Symbol update error:',e)
-                
-                # clean up
-                
-                    
-            sleep(1)
-        
-
-# -- version updater --
-# updates will be queried from github pages.
-# the mini CICD pipeline will be triggered once every sync period in the multiticker.
-# or at start to query the current version on main branch
-
-__version__ = 'v6.1'
-github_pages_target = 'https://raw.githubusercontent.com/B0-B/bitboi/main/main.py'
-
-def checkForUpdates ():
+# ---- sequences ----
+# CICD pipeline
+def auto_update ():
 
     '''
-    Tiny CICD pipeline implementation
+    Tiny CICD pipeline.
+    Checks queried content from github pages
+    and updates the code if newer version was found.
     '''
 
-    # request latest code 
-    while True:
+    # request latest code
+    code = None
+    for i in range(5):
         try:
             response = requests.get(github_pages_target)
             code = str(response.text)
             break
         except Exception as e:
             print('failed to request latest version, try again ...')
+            sleep(.2)
+    if not code:
+        return
     
     # parse out version
     lines = code.split('\r\n')
@@ -661,7 +381,7 @@ def checkForUpdates ():
     count = 5
     updateConfirmed = False
     for s in range(count):
-        printDisplay(f'Should I update to new version {newVersion}? Press button for "yes" ({count-s}s)')
+        print_display(f'Should I update to new version {newVersion}? Press button for "yes" ({count-s}s)')
         # wait for 1 second and listen for input
         for i in range(1000):            
             if bootsel_is_pressed():
@@ -671,29 +391,250 @@ def checkForUpdates ():
     
     # confirmed
     if updateConfirmed:
-        printDisplay(f'Updating to version {newVersion} ...')
+        print_display(f'Updating to version {newVersion} ...')
         sleep(1)
         with open('./main.py', 'w+') as file:
             file.write(code)
-        printDisplay(f'Thanks for updating me! :)')
+        print_display(f'Thanks for updating me! :)')
         sleep(3)
         reset()
-            
 
-
-# -- webserver --
-# for future development
-def main ():
-
+def welcome ():
+    
     '''
-    Main orchestration.
+    Little welcome sequence.
     '''
     
-    showLogo(3)
-    connectToWifi()
-    checkForUpdates()
-    multiTicker(krakenReference, UPDATE)
+    delay = 3
+    typeDelay = 0.1
+    center('HELLO :)', 10, 40, 24, typeDelay)
+    sleep(delay)
+    center("I am bitboi", 10, 20, 24, typeDelay)
+    sleep(delay)
+    center("a crypto ticker", 10, 0, 24, typeDelay)
+    sleep(delay)
+    center("Wi-Fi: bitboi", 10, 10, 24, typeDelay)
+    sleep(delay)
+
+def load_news_feed ():
+    
+    # draw current news document from github pages
+    data = requests.get(github_feed_target).text
+    received_feed = str(data).replace('\n', ' ') + ' '
+
+    # override global feed if payload differs
+    return received_feed
+     
+def show_news_feed_window (feed_pointer, news_window):
+    
+    '''
+    Displays current windown of news feed string, based on pointer.
+    '''
+
+    window = ''
+    for inc in range(news_window):
+        window += news.feed[(feed_pointer+inc)%len(news.feed)]
+    oled.fill_rect(0, 0, 127, 10, 0) # white background
+    oled.fill_rect(0, 0, 32, 10, 1) # white background
+    oled.text(f'NEWS', 0, 2, 0)
+    oled.text(f'    {window}', 0, 2, 1)
+    
+def render (feed_pointer, news_window):
+
+    '''
+    Render loop.
+    '''
+    
+    while True:
+        
+        if news.feed:
+            show_news_feed_window(feed_pointer, news_window)
+            feed_pointer = (feed_pointer + 1) % len(news.feed)
+        oled.show()
+        sleep(.3)
+
+# ============= Ticker Code ==============
+def tick ():
+
+    '''
+    Live crypto ticker implementation with symbol switching button.
+    '''
+    
+    # extract the symbols for reference
+    symbol = krakenReference[COIN]
+    
+    # alter display mode at every cycle
+    PAGE = 0
+
+    # conversion
+    intervals_per_day = int(1440/INTERVAL)
+    intervals_per_hour = int(60/INTERVAL)
+    
+    # news buffer
+    # news_feed = ''
+    news_window = 11
+    feed_pointer = 0
+    
+    ticks = 0
+    
+    # - init render thread -
+#     news_feed = load_news_feed()
+#     print('news feed', news_feed)
+#     show_news_feed_window(news_feed, feed_pointer, news_window)
+    _thread.start_new_thread(render, (feed_pointer, news_window))
+    sleep(1)
+
+    while True:
+
+        try:
+            
+            # check every ~5 minutes for news
+            if ticks % 20 == 0:
+                print(f'request news feed from {github_feed_target}')
+                print('news feed', news.feed)
+                news.feed = load_news_feed()
+
+            # request closed price array
+            closed = krakenApi.history(symbol, INTERVAL, EPOCH, REFERENCE)
+            
+            # check if the symbol has a significant history first
+            if len(closed) < TREND_INTERVALS + 1:
+                print_display(f'not enough data for {symbol} yet.')
+                return
+            
+            # extract last price
+            price = digits(closed[-1], 5)
+            print(f'last price ${price}')
+            
+            clear()
+            
+            # ---- page casing ----
+            
+            # show chart
+            if DISPLAY_PAGES[PAGE] == 'chart':
+
+                # compute change for price line only
+                change_24h = round(100 * (closed[-1] / closed[-intervals_per_day] - 1), 1)
+                sign = ['+', ''][change_24h < 0]
+                
+                # build price line with 24h return 
+                priceLine = f'${price} {sign}{change_24h}%'
+                
+                # add price line
+                oled.text(priceLine, leftPadding, 15)
+                
+                # plot chart below
+                plot_chart (oled, closed, height=32, y=3)
+
+            # show statistics, like price, change, volatility etc.    
+            elif DISPLAY_PAGES[PAGE] == 'statistics':
+                
+                # compute statistics
+                d = drift(closed, TREND_INTERVALS)
+                d_h = round(100 * d / intervals_per_hour, 2)
+                v = volatility(closed, d, TREND_INTERVALS)
+                v_h = round(100*v/sqrt(intervals_per_hour),2) # see https://en.wikipedia.org/wiki/Volatility_(finance)#Mathematical_definition
+                change_24h = round(100 * (closed[-1] / closed[-intervals_per_day] - 1), 1)
+                sign = ['+', ''][change_24h < 0]
+                
+                # build price line with 24h return 
+                priceLine = f'${price} {sign}{change_24h}%'
+                
+                # build ROI line from 1h drift
+                roiLine = f'ROI: {["+", ""][d < 0]}{d_h} %/h'
+                
+                # build volatility line
+                volLine = f'VOL: {v_h} %/h'
+                
+                # add assembled lines
+                oled.text(priceLine, leftPadding , 15)
+                oled.text(roiLine, leftPadding , 30)
+                oled.text(volLine, leftPadding , 45)
+                
+                # the oled.show() is called in render thread every second
+            
+            # delay
+            sleep(UPDATE-1)
+            
+        except Exception as e:
+
+            sys.print_exception(e)
+
+        finally:
+
+            # flip to next page
+            PAGE = (PAGE + 1) % len(DISPLAY_PAGES)
+            
+            # increment ticks
+            ticks += 1
+            
+            sleep(1)
+    
+            
+
+# ============= Main Sequence ==============
+def main ():
+    try:
+        # delay to get into bootsel button working
+        sleep(1)
+        
+        # show logo
+        trademark(3)
+        
+        # ---- credentials & config ----
+        # check if wifi credentials were not set
+        if not _config['ssid'] or not _config['wpa2']:
+            welcome()
+            spawn()
+            return
+        elif bootsel_is_pressed():
+            text('started         captive        portal:         bitboi captive', startLine=0)
+            spawn()
+            return
+        
+        # ---- start Wi-Fi connection ---- 
+        # wifi has highest priority
+        attempts = 3
+        wifi.active(True)
+        # disable powersave mode to make the wifi more responsive
+        wifi.config(pm = 0xa11140)
+        center('connecting...', 10, 10, 24, 0.05)
+        for _ in range(attempts):
+            try:
+                wifi.connect(_config['ssid'], _config['wpa2'])
+                sleep(1)
+                # construct a little test request
+                # this should defnitely throw exceptions
+                news.feed = load_news_feed()
+                # set global flag
+                wifi_connected = True
+                break
+            except OSError as e:
+                if str(e) == 'no matching wifi network found':
+                    print_display('No network!')
+                else:
+                    print_display('Connection Error > Reset')
+                    sleep(1)
+                    reset()
+                sys.print_exception(e)
+                return -1
+            except Exception as e:
+                print_display('Unknown error while connecting!')
+                sys.print_exception(e)
+                return -2
+        
+        # ---- update pipeline ----
+        # auto_update()
+        
+        # ---- start ticker ----
+        center('ticker', 10, 45, 24, 0.1)
+        tick()
+    except Exception as e:
+        sys.print_exception(e)
+    finally:
+        sys.exit()
 
 
 if __name__ == '__main__':
     main()
+

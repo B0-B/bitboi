@@ -9,9 +9,13 @@
 #####################################################################################
 #####################################################################################
 
-__version__ = 'v7.0'
-github_pages_target = 'https://raw.githubusercontent.com/B0-B/bitboi/main/main.py'
-github_feed_target = 'https://raw.githubusercontent.com/B0-B/bitboi/main/news'
+__version__ = 'v7.1'
+
+# urls
+github_repository = 'https://raw.githubusercontent.com/B0-B/bitboi/main/'
+github_stack_files = github_repository + 'files'
+github_pages_target = github_repository + 'main.py'
+github_feed_target = github_repository + 'news'
 
 #####################################################################################
 
@@ -28,7 +32,7 @@ from framebuf import FrameBuffer, MONO_HLSB
 # ============= Parameters ==============
 # Pages which alternate on display
 PAGE = 0
-DISPLAY_PAGES = ['chart', 'statistics']
+DISPLAY_PAGES = ['price', 'chart', 'statistics']
 
 # ---- I2C pin-out ----
 # Do not change these parameters, otherwise
@@ -55,12 +59,13 @@ class news:
 with open('config.json') as f:
     _config = json.load(f)
 # convert to variables
-EPOCH = 128					                    # a value for each pixel - number of values seperated by interval (too large values can overload memory)
-INTERVAL = _config['interval']                  # interval unit in minutes (e.g. a day = 1440 minutes)
-TREND_INTERVALS = _config['trend_intervals']    # how many intervals for trend window
-REFERENCE = _config['reference']			    # reference currency
-COIN = _config['coin']                      	# selected kraken ticker symbol
-UPDATE =  15                                    # OHLC request delay in seconds
+EPOCH = 128					                    	# a value for each pixel - number of values seperated by interval (too large values can overload memory)
+INTERVAL = int(_config['interval'])             	# interval unit in minutes (e.g. a day = 1440 minutes)
+TREND_INTERVALS = int(_config['trend_intervals'])   # how many intervals for trend window
+REFERENCE = _config['reference']			    	# reference currency
+COIN = _config['coin']                      		# selected kraken ticker symbol
+UPDATE =  15                                    	# OHLC request delay in seconds
+
 
 # ============= Load Modules ==============
 # ---- load I²C connection ----
@@ -77,6 +82,30 @@ oled = SSD1306_I2C(WIDTH, HEIGHT, i2c)
 # ---- init wifi ----
 wifi = WLAN(STA_IF)
 wifi_connected = False
+# ---- Watchdog ----
+class watchdog:
+    SLICE_SIZE = 10 			# compare only the last x values to save space
+    TICK_THRESHOLD = 30 		# restarts the ticker automatically if this threshold is reached
+                                # the watchdog counts how often the history kept unchanged
+    COUNTER = 0     
+    COPY = []
+    def track (timeseries):
+
+        '''
+        Tracks how often (in a row) the timeseries kept unchanged.
+        If the stagnation holds for longer than specified threshold,
+        the watchdog will restart the device.
+        '''
+
+        # check for changes in the timeseries
+        if not timeseries or len(timeseries) < watchdog.SLICE_SIZE or timeseries[-watchdog.SLICE_SIZE:] == watchdog.COPY:
+            watchdog.COUNTER += 1
+            if watchdog.COUNTER >= watchdog.TICK_THRESHOLD: reset()
+            return
+
+        # all fine - override and reset counter
+        watchdog.COPY = timeseries[-watchdog.SLICE_SIZE:]
+        watchdog.COUNTER = 0
 
 # ============= Methods ==============
 # ---- bootsel button exploit ----
@@ -233,7 +262,157 @@ def center (output, lineHeight=10, pad_x=0, pad_y=0, delay=.2):
             oled.show()
         sleep(delay)
     oled.show()
+
+def renderPrice (number, y=0, x=0, significance=4):
+
+    ind = 0
+    short = float(number)
+    suffix = ['', 'K', 'M', 'B', 'T', 'Q']
+    while short > 999:
+        short /= 1000
+        ind += 1
     
+    # cut to n significant digits and construct final price string
+    final = str(short)[:significance+1]
+    price = f'{final}{suffix[ind]}'
+
+    # render price string
+    tab = 25
+    tabs = 10 # short tab
+    pointer = x
+    char = None
+    for i in range(len(price)):
+        char = price[i]
+        renderDigit (char, x=pointer, y=y)
+        # Remove the dot if its the last symbol in string
+        if i == len(price) - 2 and char == '.':
+            continue
+        if char == '.':
+            pointer += tabs
+        else:
+            pointer += tab
+
+def renderDigit (char, x, y):
+
+    #oled.fill_rect(0, 20, 20, 30, 1)
+    oled.fill_rect(x, y, 20, 30, 1)
+    # round edges of digits
+    if char in '0236789':
+        oled.pixel(x, y, 0)
+        oled.pixel(x+19, y, 0)
+        oled.pixel(x, y+29, 0)
+        oled.pixel(x+19, y+29, 0)
+    if char == '0':
+        oled.fill_rect(x+5, y+5, 10, 20, 0)
+    if char == '1':
+        oled.fill_rect(x, y+5, 12, 25, 0)
+        oled.fill_rect(x+17, y, 3, 30, 0)
+        oled.fill_rect(x, y, 5, 5, 0)
+        oled.fill_rect(x, y, 6, 4, 0)
+        oled.fill_rect(x, y, 7, 3, 0)
+        oled.fill_rect(x, y, 8, 2, 0)
+    if char == '2':
+        oled.fill_rect(x, y+5, 15, 7, 0)
+        oled.fill_rect(x+5, y+17, 15, 8, 0)
+        oled.pixel(x, y+12, 0)
+        oled.pixel(x+19, y+16, 0)
+        oled.pixel(x+19, y, 0)
+    if char == '3':
+        oled.fill_rect(x, y+5, 15, 7, 0)
+        oled.fill_rect(x, y+17, 15, 8, 0)
+    if char == '4':
+        oled.fill_rect(x+5, y, 10, 12, 0)
+        oled.fill_rect(x, y+18, 15, 12, 0)
+    if char == '5':
+        oled.fill_rect(x+5, y+5, 15, 7, 0)
+        oled.fill_rect(x, y+17, 15, 8, 0)
+        oled.pixel(x+19, y+12, 0)
+        oled.pixel(x+19, y+29, 0)
+        oled.pixel(x, y+29, 0)
+    if char == '6':
+        oled.fill_rect(x+5, y+5, 15, 7, 0)
+        oled.fill_rect(x+5, y+17, 10, 8, 0)
+        oled.pixel(x+19, y+12, 0)
+    if char == '7':
+        oled.fill_rect(x, y+5, 15, 25, 0)
+        oled.fill_rect(x+14, y+10, 1, 20, 1)
+        oled.fill_rect(x+13, y+15, 1, 15, 1)
+        oled.fill_rect(x+12, y+20, 1, 10, 1)
+        oled.fill_rect(x+11, y+25, 1, 5, 1)
+        oled.fill_rect(x+19, y+10, 1, 20, 0)
+        oled.fill_rect(x+18, y+15, 1, 15, 0)
+        oled.fill_rect(x+17, y+20, 1, 10, 0)
+        oled.fill_rect(x+16, y+25, 1, 5, 0)
+    if char == '8':
+        oled.fill_rect(x+5, y+5, 10, 7, 0)
+        oled.fill_rect(x+5, y+17, 10, 8, 0)
+    if char == '9':
+        oled.fill_rect(x+5, y+5, 10, 7, 0)
+        oled.fill_rect(x, y+17, 15, 8, 0)
+        oled.fill_rect(x, y+17, 2, 13, 0)
+        oled.pixel(x, y+16, 0)
+    if char == '.':
+        oled.fill_rect(x, y, 20, 30, 0)
+        oled.fill_rect(x, y+25, 5, 5, 1)
+    if char == 'K':
+        oled.fill_rect(x+5, y, 25, 30, 0)
+        oled.fill_rect(x+5, y+13, 5, 5, 1)
+        oled.fill_rect(x+10, y+8, 5, 5, 1)
+        oled.fill_rect(x+15, y+3, 5, 5, 1)
+        
+        oled.fill_rect(x+10, y+13, 5, 5, 1)
+        oled.fill_rect(x+15, y+18, 5, 12, 1)
+        
+        oled.fill_rect(x+14, y+18, 1, 4, 1)
+        oled.fill_rect(x+15, y+14, 2, 4, 1)
+        oled.fill_rect(x+19, y+18, 1, 3, 0)
+        oled.fill_rect(x+11, y+18, 3, 1, 1)
+        oled.fill_rect(x+8, y+11, 2, 2, 1)
+        oled.fill_rect(x+15, y+8, 2, 2, 1)
+        oled.fill_rect(x+13, y+6, 2, 2, 1)
+    if char == 'M':
+        oled.fill_rect(x+6, y, 8, 2, 0)
+        oled.fill_rect(x+8, y+2, 4, 2, 0)
+        oled.fill_rect(x+9, y+4, 2, 2, 0)
+        oled.fill_rect(x+6, y+13, 3, 17, 0)
+        oled.fill_rect(x+12, y+13, 3, 17, 0)
+        oled.fill_rect(x+9, y+15, 3, 15, 0)
+    if char == 'B':
+        oled.fill_rect(x+18, y, 2, 11, 0)
+        oled.fill_rect(x+5, y+5, 8, 7, 0)
+        oled.fill_rect(x+5, y+17, 10, 8, 0)
+        oled.pixel(x+17, y, 0)
+        oled.pixel(x+19, y+29, 0)
+        oled.fill_rect(x+18, y+11, 1, 3, 0)
+        oled.fill_rect(x+17, y+12, 1, 1, 0)
+        oled.fill_rect(x+19, y+11, 1, 3, 0)
+    if char == 'T':
+        oled.fill_rect(x, y+5, 7, 25, 0)
+        oled.fill_rect(x+13, y+5, 7, 25, 0)
+    if char == 'Q':
+        oled.pixel(x, y, 0)
+        oled.pixel(x+19, y, 0)
+        oled.pixel(x, y+29, 0)
+        oled.pixel(x+19, y+29, 0)
+        oled.fill_rect(x+5, y+5, 10, 20, 0)
+        oled.fill_rect(x+12, y+20, 2, 7, 0)
+        oled.fill_rect(x+13, y+21, 2, 7, 0)
+        oled.fill_rect(x+14, y+22, 2, 7, 0)
+        oled.fill_rect(x+15, y+23, 2, 7, 0)
+        oled.fill_rect(x+16, y+24, 2, 7, 0)
+        oled.fill_rect(x+17, y+25, 2, 7, 0)
+        oled.fill_rect(x+18, y+26, 2, 7, 0)
+        oled.fill_rect(x+19, y+27, 2, 7, 0)
+        oled.fill_rect(x+12, y+20, 2, 5, 1)
+        oled.fill_rect(x+13, y+21, 2, 5, 1)
+        oled.fill_rect(x+14, y+22, 2, 5, 1)
+        oled.fill_rect(x+15, y+23, 2, 5, 1)
+        oled.fill_rect(x+16, y+24, 2, 5, 1)
+        oled.fill_rect(x+17, y+25, 2, 5, 1)
+        oled.fill_rect(x+18, y+26, 2, 5, 1)
+        oled.fill_rect(x+19, y+27, 2, 5, 1)
+
+
 # ---- trading API and stats ----    
 class krakenApi:
 
@@ -335,16 +514,22 @@ def digits (number, n):
     new = ''
     count = 0
     for sym in stringed:
-        if not (count == 0 and sym == '0') and sym != '.':
+        # skip zeros at the beginning
+        if count == 0 and sym == '0':
+            continue
+        # exclude the dot as digit
+        if sym != '.':
             count += 1
+        # add symbol to final string
         new += sym
         if count == n:
             break
     return float(new)
 
+
 # ---- sequences ----
 # CICD pipeline
-def auto_update ():
+def update ():
 
     '''
     Tiny CICD pipeline.
@@ -380,7 +565,7 @@ def auto_update ():
     # seconds counter for confirmation
     count = 5
     updateConfirmed = False
-    for s in range(count):
+    for _ in range(count):
         print_display(f'Should I update to new version {newVersion}? Press button for "yes" ({count-s}s)')
         # wait for 1 second and listen for input
         for i in range(1000):            
@@ -399,6 +584,48 @@ def auto_update ():
         sleep(3)
         reset()
 
+    # get the file stack
+    response = requests.get(github_stack_files)
+    files = str(response.text).split('\n')
+    
+    payload = ''
+    for file in files:
+        
+        # request file and extract payload
+        payload = ''
+        for i in range(5):
+            if file == '': continue
+            try:
+                res = requests.get(github_repository + file)
+                payload = str(response.text)
+                break
+            except:
+                print(f'failed to load {file}, try again ...')
+            finally:
+                if i == 4:
+                    print_display('update failed.')
+                    exit()
+        if not payload:
+            print_display('update failed.')
+            exit()
+        sleep(1)
+        
+        # write file
+        try:
+            with open(file, 'w+') as f:
+                f.write(payload)
+        except Exception as e:
+            sys.print_exception(e)
+            print_display(f'Update not possible')
+            exit()
+    
+    # finish
+    count = 5
+    for i in range(count, 0 , -1):
+        print_display(f'Update complete! Will reboot in {i} ')
+        sleep(1)
+    reset()
+        
 def welcome ():
     
     '''
@@ -453,6 +680,7 @@ def render (feed_pointer, news_window):
         oled.show()
         sleep(.3)
 
+
 # ============= Ticker Code ==============
 def tick ():
 
@@ -462,6 +690,7 @@ def tick ():
     
     # extract the symbols for reference
     symbol = krakenReference[COIN]
+    
     
     # alter display mode at every cycle
     PAGE = 0
@@ -478,11 +707,10 @@ def tick ():
     ticks = 0
     
     # - init render thread -
-#     news_feed = load_news_feed()
-#     print('news feed', news_feed)
-#     show_news_feed_window(news_feed, feed_pointer, news_window)
     _thread.start_new_thread(render, (feed_pointer, news_window))
     sleep(1)
+
+    closed = []
 
     while True:
 
@@ -503,12 +731,17 @@ def tick ():
                 return
             
             # extract last price
-            price = digits(closed[-1], 5)
+            price = int(closed[-1]) #digits(closed[-1], 5)
             print(f'last price ${price}')
             
             clear()
             
             # ---- page casing ----
+            
+            # render the price (enlarged)
+            if DISPLAY_PAGES[PAGE] == 'price':
+                
+                renderPrice(price, 20, 10, 3)
             
             # show chart
             if DISPLAY_PAGES[PAGE] == 'chart':
@@ -533,7 +766,7 @@ def tick ():
                 d = drift(closed, TREND_INTERVALS)
                 d_h = round(100 * d / intervals_per_hour, 2)
                 v = volatility(closed, d, TREND_INTERVALS)
-                v_h = round(100*v/sqrt(intervals_per_hour),2) # see https://en.wikipedia.org/wiki/Volatility_(finance)#Mathematical_definition
+                v_h = round(100*v/sqrt(intervals_per_hour), 2) # see https://en.wikipedia.org/wiki/Volatility_(finance)#Mathematical_definition
                 change_24h = round(100 * (closed[-1] / closed[-intervals_per_day] - 1), 1)
                 sign = ['+', ''][change_24h < 0]
                 
@@ -547,9 +780,9 @@ def tick ():
                 volLine = f'VOL: {v_h} %/h'
                 
                 # add assembled lines
-                oled.text(priceLine, leftPadding , 15)
-                oled.text(roiLine, leftPadding , 30)
-                oled.text(volLine, leftPadding , 45)
+                oled.text(priceLine, leftPadding , 18)
+                oled.text(roiLine, leftPadding , 36)
+                oled.text(volLine, leftPadding , 54)
                 
                 # the oled.show() is called in render thread every second
             
@@ -567,10 +800,12 @@ def tick ():
             
             # increment ticks
             ticks += 1
+
+            # feed the watchdog with latest timeseries
+            watchdog.track(closed)
             
             sleep(1)
-    
-            
+
 
 # ============= Main Sequence ==============
 def main ():
@@ -606,8 +841,6 @@ def main ():
                 # construct a little test request
                 # this should defnitely throw exceptions
                 news.feed = load_news_feed()
-                # set global flag
-                wifi_connected = True
                 break
             except OSError as e:
                 if str(e) == 'no matching wifi network found':
@@ -624,7 +857,7 @@ def main ():
                 return -2
         
         # ---- update pipeline ----
-        # auto_update()
+        update()
         
         # ---- start ticker ----
         center('ticker', 10, 45, 24, 0.1)
@@ -637,4 +870,3 @@ def main ():
 
 if __name__ == '__main__':
     main()
-
